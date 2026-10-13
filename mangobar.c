@@ -306,13 +306,16 @@ static void format_int(const char *fmt, int value, const char *icon, char *out,
 }
 
 // Battery format: {percent}, {icon}, {status} and {ac} (plug icon)
-static void format_battery(const char *fmt, int percent, const char *status,
+static void format_battery(const char *fmt, int percent, double power, const char *status,
                            const char *icon, const char *ac, char *out,
                            size_t outsz) {
   char pct[16];
+  char pow[16];
   snprintf(pct, sizeof(pct), "%d", percent);
+  snprintf(pow, sizeof(pct), "%.2f", power);
   const FmtArg args[] = {{"{}", pct},
                          {"{percent}", pct},
+                         {"{power}", pow},
                          {"{icon}", icon},
                          {"{status}", status},
                          {"{ac}", ac}};
@@ -524,10 +527,12 @@ typedef struct Bar {
   char keymode[32];
   char kb_layout[16];
   int cpu_pct, mem_pct;
+  double mem_used;
   double cpu_load;
   int hideclients;
   int hover_tag; // hovered tag index, -1 = none
   int battery_pct[MANGOBAR_MAX_BATTERIES];
+  double battery_power[MANGOBAR_MAX_BATTERIES];
   bool battery_present[MANGOBAR_MAX_BATTERIES];
   bool battery_on_ac[MANGOBAR_MAX_BATTERIES];
   char battery_status[MANGOBAR_MAX_BATTERIES][16];
@@ -1202,6 +1207,7 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
       icon = level_icon(bc->icons, bc->icon_count, bar->battery_pct[bi]);
     dst = texts[(*text_n)++];
     format_battery(module_fmt(bc->name, bc->fmt, bar), bar->battery_pct[bi],
+                   bar->battery_power[bi],
                    bar->battery_status[bi], icon,
                    bar->battery_on_ac[bi] ? bc->icon_ac : "", dst, 256);
     ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_battery,
@@ -1271,8 +1277,12 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
     break;
   case M_MEM:
     dst = texts[(*text_n)++];
-    format_int(module_fmt("mem", g_cfg.mem_format, bar), bar->mem_pct, "", dst,
-               256);
+    // format_int(module_fmt("mem", g_cfg.mem_format, bar), bar->mem_pct, "", dst,
+    //            256);
+    char memusedstr[32];
+    snprintf(memusedstr, sizeof(memusedstr), "%.2f", bar->mem_used);
+    format_value_full(module_fmt("mem", g_cfg.mem_format, bar), memusedstr,
+               "", "", dst, 256);
     ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_mem, .module = "mem",
                               .tag = -1};
     ensure_numeric_min_width(&g_rt->st_mem, module_fmt("mem", g_cfg.mem_format, bar),
@@ -4599,6 +4609,7 @@ static void update_volume() {
 static void update_battery(void) {
   char devs[MANGOBAR_MAX_BATTERIES][32];
   int caps[MANGOBAR_MAX_BATTERIES];
+  double powers[MANGOBAR_MAX_BATTERIES];
   char status[MANGOBAR_MAX_BATTERIES][16];
   bool have[MANGOBAR_MAX_BATTERIES] = {false};
   int n = 0;
@@ -4640,18 +4651,30 @@ static void update_battery(void) {
         fclose(f);
       }
 
+      double power = -1;
+      snprintf(p, sizeof(p), "/sys/class/power_supply/%s/power_now", e->d_name);
+      f = fopen(p, "r");
+      if (f) {
+        if (fscanf(f, "%lf", &power) != 1)
+          power = -1;
+        fclose(f);
+      }
+      power /= 1000000; // convert to W from uW
+
       // Keep devices sorted so the default "battery" is always the first one
       // (e.g. BAT0) regardless of readdir order.
       int ins = n;
       while (ins > 0 && strcmp(e->d_name, devs[ins - 1]) < 0) {
         snprintf(devs[ins], sizeof(devs[ins]), "%s", devs[ins - 1]);
         caps[ins] = caps[ins - 1];
+        powers[ins] = powers[ins - 1];
         snprintf(status[ins], sizeof(status[ins]), "%s", status[ins - 1]);
         have[ins] = have[ins - 1];
         ins--;
       }
       snprintf(devs[ins], sizeof(devs[ins]), "%.31s", e->d_name);
       caps[ins] = cap;
+      powers[ins] = power;
       snprintf(status[ins], sizeof(status[ins]), "%s",
                st[0] ? st : "Unknown");
       have[ins] = cap >= 0;
@@ -4704,13 +4727,16 @@ static void update_battery(void) {
         idx = 0; // default: first battery
       }
       if (idx >= 0 && have[idx]) {
+        double power = powers[idx];
         int pct = caps[idx];
         if (pct < 0)
           pct = 0;
         if (pct > 100)
           pct = 100;
+        b->battery_power[i] = power;
         b->battery_pct[i] = pct;
         b->battery_present[i] = true;
+
         snprintf(b->battery_status[i], sizeof(b->battery_status[i]), "%s",
                  status[idx]);
       } else {
@@ -4779,6 +4805,7 @@ static void update_mem(void) {
     int pct = total ? (int)(100 - (avail * 100 / total)) : 0;
     Bar *b;
     wl_list_for_each(b, &bar_list, link) b->mem_pct = pct;
+    wl_list_for_each(b, &bar_list, link) b->mem_used = (double)(total - avail) / (1024 * 1024);
   }
 }
 
