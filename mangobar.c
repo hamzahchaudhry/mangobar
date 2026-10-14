@@ -528,7 +528,9 @@ typedef struct Bar {
   char kb_layout[16];
   int cpu_pct, mem_pct;
   double mem_used;
+  double swap_used;
   double cpu_load;
+  double cpu_avg_freq;
   int hideclients;
   int hover_tag; // hovered tag index, -1 = none
   int battery_pct[MANGOBAR_MAX_BATTERIES];
@@ -1264,11 +1266,13 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
     {
       char usagestr[16];
       char loadstr[32];
+      char freqstr[32];
       snprintf(usagestr, sizeof(usagestr), "%d", bar->cpu_pct);
       snprintf(loadstr, sizeof(loadstr), "%.2f", bar->cpu_load);
+      snprintf(freqstr, sizeof(freqstr), "%.2f", bar->cpu_avg_freq);
       dst = texts[(*text_n)++];
       format_value_full(module_fmt("cpu", g_cfg.cpu_format, bar), usagestr,
-                        loadstr, "", dst, 256);
+                        loadstr, freqstr, dst, 256);
       ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_cpu,
                                 .module = "cpu", .tag = -1};
       ensure_numeric_min_width(&g_rt->st_cpu, module_fmt("cpu", g_cfg.cpu_format, bar),
@@ -1280,9 +1284,12 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
     // format_int(module_fmt("mem", g_cfg.mem_format, bar), bar->mem_pct, "", dst,
     //            256);
     char memusedstr[32];
+    char swapusedstr[32];
     snprintf(memusedstr, sizeof(memusedstr), "%.2f", bar->mem_used);
+    snprintf(swapusedstr, sizeof(swapusedstr), "%.2f", bar->swap_used);
+    dst = texts[(*text_n)++];
     format_value_full(module_fmt("mem", g_cfg.mem_format, bar), memusedstr,
-               "", "", dst, 256);
+               swapusedstr, "", dst, 256);
     ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_mem, .module = "mem",
                               .tag = -1};
     ensure_numeric_min_width(&g_rt->st_mem, module_fmt("mem", g_cfg.mem_format, bar),
@@ -4788,24 +4795,58 @@ static void update_cpu(void) {
     }
     fclose(lf);
   }
+
+  FILE *ff = fopen("/proc/cpuinfo", "r");
+  if (ff) {
+    const int MAX_CORES = 64;
+    double freqs[MAX_CORES];
+    char line[128];
+    int idx = 0;
+    while (fgets(line, sizeof(line), ff)) {
+      if (strncmp(line, "cpu MHz\t\t:", 10) == 0) {
+        sscanf(line + 10, "%lf", &freqs[idx]);
+        ++idx;
+      }
+    }
+
+    double avg_freq = 0;
+    for (int i = 0; i < idx; ++i) {
+        avg_freq += freqs[i];
+    }
+
+    if (idx > 0) {
+      avg_freq /= idx;
+    }
+
+    Bar *b;
+    wl_list_for_each(b, &bar_list, link) b->cpu_avg_freq = avg_freq;
+
+    fclose(ff);
+  }
 }
 
 static void update_mem(void) {
   FILE *f = fopen("/proc/meminfo", "r");
   if (f) {
     long total = 0, avail = 0;
+    long swap_total, swap_free = 0;
     char line[128];
     while (fgets(line, sizeof(line), f)) {
       if (strncmp(line, "MemTotal:", 9) == 0)
         sscanf(line + 9, "%ld", &total);
       else if (strncmp(line, "MemAvailable:", 13) == 0)
         sscanf(line + 13, "%ld", &avail);
+      else if (strncmp(line, "SwapTotal:", 10) == 0)
+        sscanf(line + 10, "%ld", &swap_total);
+      else if (strncmp(line, "SwapFree:", 9) == 0)
+        sscanf(line + 9, "%ld", &swap_free);
     }
     fclose(f);
     int pct = total ? (int)(100 - (avail * 100 / total)) : 0;
     Bar *b;
     wl_list_for_each(b, &bar_list, link) b->mem_pct = pct;
     wl_list_for_each(b, &bar_list, link) b->mem_used = (double)(total - avail) / (1024 * 1024);
+    wl_list_for_each(b, &bar_list, link) b->swap_used = (double)(swap_total - swap_free) / (1024 * 1024);
   }
 }
 
