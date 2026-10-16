@@ -285,6 +285,7 @@ static void format_value_full(const char *fmt, const char *value,
                          {"{percent}", value},
                          {"{load}", load ? load : value},
                          {"{usage}", value},
+                         {"{temperature}", value},
                          {"{volume}", value},
                          {"{title}", value},
                          {"{layout}", value},
@@ -531,6 +532,7 @@ typedef struct Bar {
   double swap_used;
   double cpu_load;
   double cpu_avg_freq;
+  int cpu_temp;
   int hideclients;
   int hover_tag; // hovered tag index, -1 = none
   int battery_pct[MANGOBAR_MAX_BATTERIES];
@@ -1267,12 +1269,16 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
       char usagestr[16];
       char loadstr[32];
       char freqstr[32];
+      char tempstr[16];
       snprintf(usagestr, sizeof(usagestr), "%d", bar->cpu_pct);
       snprintf(loadstr, sizeof(loadstr), "%.2f", bar->cpu_load);
       snprintf(freqstr, sizeof(freqstr), "%.2f", bar->cpu_avg_freq);
+      snprintf(tempstr, sizeof(tempstr), "%d", bar->cpu_temp);
       dst = texts[(*text_n)++];
       format_value_full(module_fmt("cpu", g_cfg.cpu_format, bar), usagestr,
                         loadstr, freqstr, dst, 256);
+      format_value_full(module_fmt("cpu", g_cfg.cpu_format, bar), tempstr,
+                        "", "", dst, 256);
       ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_cpu,
                                 .module = "cpu", .tag = -1};
       ensure_numeric_min_width(&g_rt->st_cpu, module_fmt("cpu", g_cfg.cpu_format, bar),
@@ -4822,6 +4828,21 @@ static void update_cpu(void) {
     wl_list_for_each(b, &bar_list, link) b->cpu_avg_freq = avg_freq;
 
     fclose(ff);
+  }
+
+  FILE *ft = fopen("/sys/class/hwmon/hwmon6/temp1_input", "r");
+  if (ft) {
+    char line[128];
+    int temp;
+    while (fgets(line, sizeof(line), ft)) {
+      sscanf(line, "%d", &temp);
+    }
+    temp /= 1000;
+
+    Bar *b;
+    wl_list_for_each(b, &bar_list, link) b->cpu_temp = temp;
+
+    fclose(ft);
   }
 }
 
