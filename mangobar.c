@@ -285,7 +285,8 @@ static void format_value_full(const char *fmt, const char *value,
                          {"{percent}", value},
                          {"{load}", load ? load : value},
                          {"{usage}", value},
-                         {"{temperature}", value},
+                         {"{used}", value},
+                         {"{swapUsed}", value},
                          {"{volume}", value},
                          {"{title}", value},
                          {"{layout}", value},
@@ -304,6 +305,23 @@ static void format_int(const char *fmt, int value, const char *icon, char *out,
   char tmp[32];
   snprintf(tmp, sizeof(tmp), "%d", value);
   format_value(fmt, tmp, icon, out, outsz);
+}
+
+static void format_cpu(const char *fmt, int usage, double load, double frequency, int temp, char *out, size_t outsz) {
+  char usagestr[16];
+  char loadstr[16];
+  char frequencystr[16];
+  char tempstr[16];
+  snprintf(usagestr, sizeof(usagestr), "%d", usage);
+  snprintf(loadstr, sizeof(loadstr), "%.2f", load);
+  snprintf(frequencystr, sizeof(frequencystr), "%.2f", frequency);
+  snprintf(tempstr, sizeof(tempstr), "%d", temp);
+  const FmtArg args[] = {{"{}", usagestr},
+                         {"{usage}", usagestr},
+                         {"{load}", loadstr},
+                         {"{frequency}", frequencystr},
+                         {"{temperature}", tempstr}};
+  format_expand(fmt, args, LENGTH(args), out, outsz);
 }
 
 // Battery format: {percent}, {icon}, {status} and {ac} (plug icon)
@@ -1268,29 +1286,24 @@ static int append_module_entries(Bar *bar, int id, ModuleEntry *ents, int max,
     break;
   case M_CPU:
     {
-      char usagestr[16];
-      char loadstr[32];
-      char freqstr[32];
-      char tempstr[16];
-      snprintf(usagestr, sizeof(usagestr), "%d", bar->cpu_pct);
-      snprintf(loadstr, sizeof(loadstr), "%.2f", bar->cpu_load);
-      snprintf(freqstr, sizeof(freqstr), "%.2f", bar->cpu_avg_freq);
-      snprintf(tempstr, sizeof(tempstr), "%d", bar->cpu_temp);
       dst = texts[(*text_n)++];
-      format_value_full(module_fmt("cpu", g_cfg.cpu_format, bar), usagestr,
-                        loadstr, freqstr, dst, 256);
-      format_value_full(module_fmt("cpu", g_cfg.cpu_format, bar), tempstr,
-                        "", "", dst, 256);
-      ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_cpu,
-                                .module = "cpu", .tag = -1};
-      ensure_numeric_min_width(&g_rt->st_cpu, module_fmt("cpu", g_cfg.cpu_format, bar),
-                               "");
+      format_cpu(
+          module_fmt("cpu", g_cfg.cpu_format, bar),
+          bar->cpu_pct,
+          bar->cpu_load,
+          bar->cpu_avg_freq,
+          bar->cpu_temp,
+          dst,
+          256
+      );
+      ents[n++] = (ModuleEntry){.text = dst, .st = &g_rt->st_cpu, .module = "cpu", .tag = -1};
+      ensure_numeric_min_width(&g_rt->st_cpu, module_fmt("cpu", g_cfg.cpu_format, bar), "");
     }
     break;
   case M_MEM:
     dst = texts[(*text_n)++];
-    // format_int(module_fmt("mem", g_cfg.mem_format, bar), bar->mem_pct, "", dst,
-    //            256);
+    format_int(module_fmt("mem", g_cfg.mem_format, bar), bar->mem_pct, "", dst,
+               256);
     char memusedstr[32];
     char swapusedstr[32];
     snprintf(memusedstr, sizeof(memusedstr), "%.2f", bar->mem_used);
@@ -4808,29 +4821,26 @@ static void update_cpu(void) {
 
   FILE *ff = fopen("/proc/cpuinfo", "r");
   if (ff) {
-    const int MAX_CORES = 64;
-    double freqs[MAX_CORES];
+    double sum_freqs = 0;
     char line[128];
     int idx = 0;
     while (fgets(line, sizeof(line), ff)) {
-      if (strncmp(line, "cpu MHz\t\t:", 10) == 0) {
-        sscanf(line + 10, "%lf", &freqs[idx]);
-        ++idx;
+      if (strncmp(line, "cpu MHz\t\t: ", 11) == 0) {
+        double freq;
+        if (sscanf(line + 11, "%lf", &freq) == 1) {
+          sum_freqs += freq;
+          ++idx;
+        }
       }
     }
-
     double avg_freq = 0;
-    for (int i = 0; i < idx; ++i) {
-        avg_freq += freqs[i];
-    }
-
     if (idx > 0) {
-      avg_freq /= idx;
+      avg_freq = sum_freqs / idx;
+      avg_freq /= 1000; // convert to GHz
     }
 
     Bar *b;
     wl_list_for_each(b, &bar_list, link) b->cpu_avg_freq = avg_freq;
-
     fclose(ff);
   }
 
